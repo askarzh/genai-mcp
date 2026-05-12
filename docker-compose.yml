@@ -1,0 +1,13 @@
+services:
+  gemini-mcp:
+    build: .
+    image: gemini-mcp:latest
+    container_name: gemini-mcp
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:?GEMINI_API_KEY is required}
+      GEMINI_DEFAULT_MODEL: ${GEMINI_DEFAULT_MODEL:-gemini-2.5-flash}
+      GEMINI_EMBED_MODEL: ${GEMINI_EMBED_MODEL:-gemini-embedding-001}
+      PORT: 3000
+    restart: unless-stopped
