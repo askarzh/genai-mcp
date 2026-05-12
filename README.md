@@ -20,17 +20,41 @@ A Dockerized, HTTP-streamable [MCP](https://modelcontextprotocol.io) server that
 | `list_files` | List uploaded files |
 | `delete_file` | Delete an uploaded file |
 
-## Setup
+## Quick start
 
 Requires Docker and a Gemini API key (https://aistudio.google.com/apikey).
 
+### Run the pre-built image
+
+A public multi-arch image (`linux/amd64`, `linux/arm64`) is published to GitHub Container Registry on every push to `main`:
+
 ```bash
+docker run --rm \
+  -e GEMINI_API_KEY=your-key-here \
+  -p 3000:3000 \
+  ghcr.io/askarzh/genai-mcp:latest
+```
+
+Available tags:
+
+| Tag | What it tracks |
+|---|---|
+| `latest` | Tip of `main` |
+| `main` | Tip of `main` (alias) |
+| `sha-<short>` | A specific commit |
+| `vX.Y.Z`, `vX.Y` | Released versions (when tagged in git) |
+
+### Or build from source
+
+```bash
+git clone https://github.com/askarzh/genai-mcp.git
+cd genai-mcp
 cp .env.example .env
 # edit .env: set GEMINI_API_KEY
 docker compose up --build
 ```
 
-Server listens at `http://localhost:3000/mcp`.
+Server listens at `http://localhost:3000/mcp` in both cases.
 
 ### Environment variables
 
