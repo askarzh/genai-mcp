@@ -19,6 +19,34 @@ DEFAULT_EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "gemini-embedding-001
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# python:3.12-slim carries no /etc/mime.types, so mimetypes falls back to its
+# built-in table — which knows .mp3 and .opus but not .ogg, .oga or .m4a. The
+# google-genai SDK guesses with mimetypes.guess_type() and rejects the upload
+# outright ("Unknown mime type: Could not determine the mimetype for your file")
+# when it gets None, so a WhatsApp voice note (.ogg) could not be uploaded at
+# all. Register the gaps for every Gemini-supported container we might be handed.
+_EXTRA_MIME_TYPES = {
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".weba": "audio/webm",
+    ".mkv": "video/x-matroska",
+    ".3gp": "video/3gpp",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+for _ext, _mime in _EXTRA_MIME_TYPES.items():
+    mimetypes.add_type(_mime, _ext)
+
+
+def _guess_mime_type(path: Path) -> Optional[str]:
+    """Best-effort MIME type for a local file, or None if we truly cannot tell."""
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or _EXTRA_MIME_TYPES.get(path.suffix.lower())
+
+
 mcp = FastMCP(
     name="gemini",
     instructions=(
@@ -74,7 +102,7 @@ def _load_image_part(image: str) -> types.Part:
         return types.Part.from_bytes(data=data, mime_type=mime)
     p = Path(image)
     if p.exists():
-        mime, _ = mimetypes.guess_type(str(p))
+        mime = _guess_mime_type(p)
         return types.Part.from_bytes(data=p.read_bytes(), mime_type=mime or "image/jpeg")
     raw = base64.b64decode(image)
     return types.Part.from_bytes(data=raw, mime_type="image/jpeg")
@@ -279,16 +307,24 @@ def list_models() -> list[dict]:
 
 
 @mcp.tool()
-def upload_file(file_path: str, display_name: Optional[str] = None) -> dict:
+def upload_file(
+    file_path: str,
+    display_name: Optional[str] = None,
+    mime_type: Optional[str] = None,
+) -> dict:
     """Upload a local file to the Gemini File API. Returns a resource name usable in generate_with_files.
 
-    Supports PDFs, audio (mp3/wav/...), video (mp4/mov/...), and images.
-    Files persist for 48 hours by default.
+    Supports PDFs, audio (mp3/ogg/m4a/wav/...), video (mp4/mov/...), and images.
+    The MIME type is detected from the extension; pass `mime_type` explicitly for
+    files with an unusual or missing extension. Files persist for 48 hours by default.
     """
     p = Path(file_path)
     if not p.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
-    config = types.UploadFileConfig(display_name=display_name) if display_name else None
+    # Always resolve the type ourselves: the SDK's own guess raises on anything
+    # its mimetypes table misses, which on this image includes .ogg and .m4a.
+    resolved = mime_type or _guess_mime_type(p)
+    config = types.UploadFileConfig(display_name=display_name, mime_type=resolved)
     f = client.files.upload(file=str(p), config=config)
     return {
         "name": f.name,
