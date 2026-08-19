@@ -28,13 +28,37 @@ upload_file = getattr(server.upload_file, "fn", server.upload_file)
         ("voice.ogg", "audio/ogg"),      # WhatsApp voice notes
         ("voice.oga", "audio/ogg"),
         ("memo.m4a", "audio/mp4"),       # iOS voice memos
-        ("clip.mp3", "audio/mpeg"),      # already worked
-        ("clip.opus", "audio/opus"),     # already worked
-        ("doc.pdf", "application/pdf"),
+        ("track.aac", "audio/aac"),
+        ("track.flac", "audio/flac"),
     ],
 )
-def test_guess_mime_type(name, want):
+def test_registered_types_are_exact(name, want):
+    """Types we register ourselves must not vary by host.
+
+    add_type() overrides whatever the platform thinks, so these hold both in
+    the slim image (no /etc/mime.types) and on a CI runner that has one.
+    """
     assert server._guess_mime_type(Path(name)) == want
+
+
+@pytest.mark.parametrize(
+    "name,family",
+    [
+        ("clip.mp3", "audio/"),
+        ("clip.opus", "audio/"),         # audio/opus bare, audio/ogg with system mime.types
+        ("doc.pdf", "application/"),
+    ],
+)
+def test_platform_types_still_resolve(name, family):
+    """Types we leave to the platform must still resolve to something sane.
+
+    The exact string is environment-dependent — .opus is audio/opus from
+    Python's built-in table but audio/ogg from a system /etc/mime.types — and
+    Gemini accepts either. What matters is that it is never None, which is the
+    condition google-genai refuses on.
+    """
+    got = server._guess_mime_type(Path(name))
+    assert got is not None and got.startswith(family), got
 
 
 def test_guess_mime_type_unknown_returns_none():
