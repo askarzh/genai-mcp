@@ -1,6 +1,11 @@
 import base64
 import mimetypes
 import os
+import threading
+import time
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -56,7 +61,8 @@ mcp = FastMCP(
         "To analyze specific web pages use `analyze_url`. "
         "For numeric/data tasks needing computation use `code_execution`. "
         "Large files (PDF, audio, video) should be sent via `upload_file` first, "
-        "then referenced by URI in `generate_with_files`."
+        "then referenced by URI in `generate_with_files`; if that answers "
+        "'processing', collect it with `get_result(job_id)`."
     ),
 )
 
@@ -126,6 +132,79 @@ def _extract_grounding(response) -> Optional[dict]:
     }
 
 
+# A Claude connector stops waiting after ~30 s; Gemini on a long PDF takes
+# longer. Long calls run as jobs: wait this long, then hand back a job_id that
+# `get_result` collects. Finished jobs are kept for an hour.
+JOB_WAIT_SECONDS = float(os.environ.get("GEMINI_JOB_WAIT_SECONDS", "20"))
+JOB_KEEP_SECONDS = 3600
+_job_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gemini-job")
+_jobs: dict[str, tuple[Future, float]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _start_job(work) -> dict:
+    job_id = uuid.uuid4().hex[:12]
+    with _jobs_lock:
+        now = time.monotonic()
+        for jid in [j for j, (f, t) in _jobs.items() if f.done() and now - t > JOB_KEEP_SECONDS]:
+            del _jobs[jid]
+        _jobs[job_id] = (_job_pool.submit(work), now)
+    return _collect(job_id)
+
+
+def _collect(job_id: str) -> dict:
+    with _jobs_lock:
+        entry = _jobs.get(job_id)
+    if entry is None:
+        return {"error": f"unknown job_id {job_id!r} (results are kept for an hour)"}
+    future, started = entry
+    try:
+        return future.result(timeout=JOB_WAIT_SECONDS)
+    except FutureTimeout:
+        return {
+            "status": "processing",
+            "job_id": job_id,
+            "elapsed_s": round(time.monotonic() - started),
+            "retry_after_s": 15,
+            "message": "Gemini is still working on this. Call get_result(job_id) "
+                       "in about 15 s; the job keeps running meanwhile.",
+        }
+    except Exception as exc:  # noqa: BLE001 — return the API's reason, don't raise
+        return {"error": f"{type(exc).__name__}: {str(exc)[:500]}"}
+
+
+_REASONS = {
+    "RECITATION": "Gemini declined to reproduce text verbatim (RECITATION): the "
+                  "content matches published material, as standard contracts "
+                  "often do. Ask for analysis or a summary instead, or extract "
+                  "the text with the Files MCP (local OCR).",
+    "SAFETY": "Gemini blocked the answer on safety grounds (SAFETY).",
+    "MAX_TOKENS": "The answer hit the output limit before any text was produced (MAX_TOKENS).",
+}
+
+
+def _answer(response, model: str) -> dict:
+    """Text and usage, or — when Gemini produced no text — why not."""
+    text = getattr(response, "text", None)
+    if text:
+        return {"text": text, "model": model, "usage": _usage(response)}
+    reason = None
+    try:
+        fr = response.candidates[0].finish_reason
+        reason = getattr(fr, "name", None) or str(fr)
+    except (AttributeError, IndexError, TypeError):
+        pass
+    block = getattr(getattr(response, "prompt_feedback", None), "block_reason", None)
+    if block:
+        reason = getattr(block, "name", None) or str(block)
+    return {
+        "error": _REASONS.get(reason or "", f"Gemini returned no text (finish_reason={reason})."),
+        "finish_reason": reason,
+        "model": model,
+        "usage": _usage(response),
+    }
+
+
 class ChatMessage(BaseModel):
     role: str = Field(description="'user' or 'model'")
     text: str
@@ -183,16 +262,31 @@ def generate_with_files(
     """Generate against files previously uploaded via `upload_file`.
 
     Each entry is a file resource name (e.g. 'files/abc123') returned by upload_file.
-    Supports PDFs, audio, video, and images.
+    Supports PDFs, audio, video, and images. Long documents can take minutes:
+    after ~20 s this returns status 'processing' with a job_id — collect the
+    answer with get_result(job_id). If Gemini declines, `error` says why.
     """
-    parts: list = []
-    for uri in file_uris:
-        f = client.files.get(name=uri)
-        parts.append(types.Part.from_uri(file_uri=f.uri, mime_type=f.mime_type))
-    parts.append(prompt)
-    config = _build_config(system_instruction=system_instruction)
-    response = client.models.generate_content(model=model, contents=parts, config=config)
-    return {"text": response.text, "model": model, "usage": _usage(response)}
+
+    def work() -> dict:
+        parts: list = []
+        for uri in file_uris:
+            f = client.files.get(name=uri)
+            parts.append(types.Part.from_uri(file_uri=f.uri, mime_type=f.mime_type))
+        parts.append(prompt)
+        config = _build_config(system_instruction=system_instruction)
+        response = client.models.generate_content(model=model, contents=parts, config=config)
+        return _answer(response, model)
+
+    return _start_job(work)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+def get_result(job_id: str) -> dict:
+    """Collect a long-running generate_with_files answer by the job_id it returned.
+
+    Waits up to ~20 s; if still running, returns status 'processing' again.
+    """
+    return _collect(job_id)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})

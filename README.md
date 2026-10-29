@@ -8,7 +8,8 @@ A Dockerized, HTTP-streamable [MCP](https://modelcontextprotocol.io) server that
 |---|---|
 | `generate_text` | Text generation with optional system instruction, temperature, max tokens, thinking budget |
 | `generate_with_images` | Multimodal generation from paths / URLs / base64 images |
-| `generate_with_files` | Multimodal generation from File API URIs (PDF, audio, video) |
+| `generate_with_files` | Multimodal generation from File API URIs (PDF, audio, video); answers `processing` + `job_id` after ~20 s, explains refusals such as RECITATION |
+| `get_result` | Collect a `generate_with_files` answer that was still processing (long documents take minutes) |
 | `chat` | Multi-turn conversation with caller-supplied history |
 | `search_grounded_generate` | Generation grounded in live Google Search results, with citations |
 | `analyze_url` | Generation grounded in the contents of one or more URLs |

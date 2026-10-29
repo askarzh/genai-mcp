@@ -31,7 +31,7 @@ docker-compose.yml   # reads .env, exposes 3000
 
 ## Tool-design rules already in effect
 
-- **One tool per action**, ~13 tools total. Stay under 15 — beyond that the tool list pollutes Claude's context.
+- **One tool per action**, 14 tools total. Stay under 15 — beyond that the tool list pollutes Claude's context.
 - **File-aware multimodal is split**: `generate_with_images` (inline bytes) vs `generate_with_files` (File API URIs). Don't merge them — small images shouldn't pay the upload roundtrip, large files shouldn't be base64'd.
 - **Built-in Gemini tools (search/url/code) are exposed as separate MCP tools** rather than a single `generate` with toggles. Claude picks better when the choice is in the tool name.
 
